@@ -19,9 +19,9 @@ GitHub Pages + Supabase の実運用チャットアプリです。Node.jsサー�
 
 ## B. 管理者を安全に作成
 1. Authentication → Users → Add user で作成。Email: azumoaurora3032@chat.azumofuyuki.invalid。パスワードは自分だけが知るものを設定。
-2. User metadata に {"username":"AzumoAurora3032"} を指定。
+2. User metadata に未使用の仮ユーザー名（例: {"username":"AzumoBoot7Q4K9"}）を設定。
 3. SQL Editorで一度だけ実行:
-   update public.profiles set role='admin',status='approved',verification_code=null,verification_expires_at=null where username_key='azumoaurora3032';
+   update public.profiles set username='AzumoAurora3032',username_key='azumoaurora3032',role='admin',status='approved',verification_code=null,verification_expires_at=null where username_key='azumoboot7q4k9';
 4. そのアカウントでサイトにログイン。公開画面から管理者を自称することはできません。
 
 ## C. サイト接続
