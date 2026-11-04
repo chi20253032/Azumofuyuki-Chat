@@ -20,7 +20,7 @@ if(!ADMIN_PASSWORD||ADMIN_PASSWORD.startsWith('replace-')) throw new Error('Set 
 if(!SESSION_SECRET||SESSION_SECRET.length<32||SESSION_SECRET.startsWith('replace-')) throw new Error('Set SESSION_SECRET (32+ chars).');
 fs.mkdirSync(UPLOAD_DIR,{recursive:true});
 const db=new Database(DB_FILE); db.pragma('journal_mode=WAL'); db.pragma('foreign_keys=ON');
-db.exec(\`
+db.exec(`
 CREATE TABLE IF NOT EXISTS users(id INTEGER PRIMARY KEY AUTOINCREMENT,username TEXT NOT NULL,username_key TEXT NOT NULL UNIQUE,password_hash TEXT NOT NULL,role TEXT NOT NULL DEFAULT 'member',status TEXT NOT NULL DEFAULT 'pending',created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,approved_at TEXT);
 CREATE TABLE IF NOT EXISTS applications(id INTEGER PRIMARY KEY AUTOINCREMENT,username TEXT NOT NULL,username_key TEXT NOT NULL UNIQUE,password_hash TEXT NOT NULL,verification_code TEXT NOT NULL UNIQUE,status TEXT NOT NULL DEFAULT 'pending',created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,reviewed_at TEXT,reviewed_by TEXT);
 CREATE TABLE IF NOT EXISTS channels(id INTEGER PRIMARY KEY AUTOINCREMENT,name TEXT NOT NULL UNIQUE,description TEXT NOT NULL DEFAULT '',created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP);
@@ -35,7 +35,7 @@ CREATE TABLE IF NOT EXISTS dm_messages(id INTEGER PRIMARY KEY AUTOINCREMENT,conv
 CREATE TABLE IF NOT EXISTS channel_permissions(channel_id INTEGER NOT NULL REFERENCES channels(id) ON DELETE CASCADE,role TEXT NOT NULL,can_send INTEGER NOT NULL DEFAULT 1,can_attach INTEGER NOT NULL DEFAULT 1,PRIMARY KEY(channel_id,role));
 CREATE INDEX IF NOT EXISTS idx_messages_channel ON messages(channel_id,id);
 CREATE INDEX IF NOT EXISTS idx_notifications_user ON notifications(user_id,is_read,id);
-\`);
+`);
 function addColumn(table,column,definition){const cols=db.prepare('PRAGMA table_info('+table+')').all().map(x=>x.name);if(!cols.includes(column))db.exec('ALTER TABLE '+table+' ADD COLUMN '+column+' '+definition);}
 addColumn('messages','edited_at','TEXT'); addColumn('messages','deleted_at','TEXT'); addColumn('messages','reply_to_id','INTEGER REFERENCES messages(id)');
 addColumn('channels','is_private','INTEGER NOT NULL DEFAULT 0'); addColumn('channels','is_archived','INTEGER NOT NULL DEFAULT 0');
