@@ -96,3 +96,4 @@ do $$ begin alter publication supabase_realtime add table public.messages; excep
 do $$ begin alter publication supabase_realtime add table public.dm_messages; exception when duplicate_object then null; when undefined_object then null; end $$;
 do $$ begin alter publication supabase_realtime add table public.attachments; exception when duplicate_object then null; when undefined_object then null; end $$;
 -- Create the admin Auth user in Dashboard first, with email azumoaurora3032@chat.azumofuyuki.invalid and metadata {"username":"AzumoAurora3032"}.
+-- Then run once: update public.profiles set username='AzumoAurora3032',username_key='azumoaurora3032',role='admin',status='approved',verification_code=null,verification_expires_at=null where username_key='azumoboot7q4k9';
