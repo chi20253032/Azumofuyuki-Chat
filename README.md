@@ -8,13 +8,14 @@ Azumofuyuki Minecraft community chat. Node.js + Express + Socket.IO + SQLite.
 - Fixed administrator identity: `AzumoAurora3032`; no self-assigned admin role
 - Unique usernames (case-insensitive), bcrypt password hashes, session authentication and login rate limits
 - Realtime public channels and persistent messages
+- Live online member count and presence broadcasts
 - Direct messages between approved members
 - Replies, message editing/deletion, emoji reactions and channel pins
 - Message search across channels
 - @username mention notifications and DM notifications
 - Authenticated file attachments (up to five files, 15 MB each; PNG/JPEG/GIF/WebP/PDF/TXT/ZIP)
 - Admin channel creation, private admin-only channels, channel archiving
-- Admin member suspension and member/moderator role management
+- Admin member suspension/restoration and member/moderator role management
 - Per-channel member send/attachment permissions
 - Responsive Japanese interface for desktop and mobile
 - Health endpoint and GitHub Actions syntax checks
