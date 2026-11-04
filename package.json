@@ -1,11 +1,16 @@
 {
   "name": "azumofuyuki-chat",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "private": true,
   "description": "Azumofuyuki Minecraft community chat",
   "main": "server.js",
-  "scripts": { "start": "node server.js", "dev": "node --watch server.js" },
-  "engines": { "node": ">=20" },
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node --watch server.js"
+  },
+  "engines": {
+    "node": ">=20"
+  },
   "dependencies": {
     "bcryptjs": "^2.4.3",
     "connect-sqlite3": "^0.9.13",
@@ -14,6 +19,7 @@
     "express-session": "^1.18.1",
     "helmet": "^8.0.0",
     "better-sqlite3": "^11.8.1",
-    "socket.io": "^4.8.1"
+    "socket.io": "^4.8.1",
+    "multer": "^1.4.5-lts.2"
   }
 }
