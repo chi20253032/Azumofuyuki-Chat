@@ -59,6 +59,7 @@ if (!admin) {
 }
 
 const app = express();
+if (process.env.NODE_ENV === 'production') app.set('trust proxy', 1);
 const server = http.createServer(app);
 const io = new Server(server);
 app.disable('x-powered-by');
@@ -98,6 +99,7 @@ app.use('/api', (req, res, next) => {
  next();
 });
 
+app.get('/api/health', (req, res) => res.json({ ok: true, service: 'azumofuyuki-chat' }));
 app.get('/api/me', (req, res) => {
  const user = currentUser(req);
  res.json({ user: user ? safeUser(user) : null });
