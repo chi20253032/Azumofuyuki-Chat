@@ -54,7 +54,6 @@ Deploy on a Node.js host with a persistent disk. Configure these environment var
 - `PORT` (provided by most hosts)
 - `SESSION_SECRET` (long random secret)
 - `ADMIN_PASSWORD` (strong unique password; never commit it)
-- `ADMIN_USERNAME=AzumoAurora3032`
 - `DATABASE_FILE` (path on persistent disk)
 - `PUBLIC_URL=https://your-domain.example` (exact public origin)
 
