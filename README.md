@@ -1,74 +1,82 @@
 # Azumofuyuki Chat
 
-Azumofuyuki Minecraft community members-only chat. The application uses Minecraft Java usernames, administrator-reviewed in-game verification, and approval before access.
+Azumofuyuki Minecraft community chat. Node.js + Express + Socket.IO + SQLite.
 
-## Features
+## Implemented
 
-- Application with a unique Minecraft username and password
-- One-time verification code for each application; applicant must say it in the Minecraft server
-- Administrator manually confirms the in-game message and approves/rejects the application
-- Only approved accounts can log in, access channels, or connect to realtime chat
-- Case-insensitive unique usernames enforced by SQLite constraints
-- Realtime channels and persistent messages
-- Admin channel creation, member list, and member suspension
-- Responsive Japanese UI
+- Minecraft Java username applications with one-time in-game verification codes and administrator approval
+- Fixed administrator identity: `AzumoAurora3032`; no self-assigned admin role
+- Unique usernames (case-insensitive), bcrypt password hashes, session authentication and login rate limits
+- Realtime public channels and persistent messages
+- Direct messages between approved members
+- Replies, message editing/deletion, emoji reactions and channel pins
+- Message search across channels
+- @username mention notifications and DM notifications
+- Authenticated file attachments (up to five files, 15 MB each; PNG/JPEG/GIF/WebP/PDF/TXT/ZIP)
+- Admin channel creation, private admin-only channels, channel archiving
+- Admin member suspension and member/moderator role management
+- Per-channel member send/attachment permissions
+- Responsive Japanese interface for desktop and mobile
+- Health endpoint and GitHub Actions syntax checks
 
 ## Requirements
 
 - Node.js 20+
-- Persistent writable disk for SQLite (do not use ephemeral serverless storage)
+- Persistent writable disk (SQLite database, sessions and uploaded files)
 - HTTPS in production
 
-## Run locally
+## Local setup
 
-1. Install Node.js 20 or later.
-2. Copy `.env.example` to `.env`.
-3. Set a unique `ADMIN_PASSWORD` and a random `SESSION_SECRET` (32+ characters).
-4. Run:
+1. Copy `.env.example` to `.env`.
+2. Set a unique `ADMIN_PASSWORD` and a random `SESSION_SECRET` of at least 32 characters.
+3. Run:
 
 ```bash
 npm install
 npm start
 ```
 
-5. Open http://localhost:3000.
-6. Sign in as `AzumoAurora3032` using the password configured in `ADMIN_PASSWORD`.
+4. Open http://localhost:3000 and sign in as `AzumoAurora3032` using the configured admin password.
 
-The administrator account is provisioned on first start. If the account already exists, its role and approved status are restored; its password is not silently overwritten.
+The administrator account is created on first startup. If it already exists in the database, its role and approved status are restored, but its password is not silently replaced. Keep the database and its backups secure.
 
-## In-game verification workflow
+## In-game identity verification
 
-1. A player submits an application using their exact Minecraft Java username.
-2. The server displays a random one-time code.
-3. The player joins the Azumofuyuki Minecraft server and says that code in public chat.
-4. The administrator checks the in-game player and the code, then opens the admin panel.
-5. Click **確認済み・承認** only after checking the player in game.
+1. A player applies with their exact Minecraft Java username and a password for this chat.
+2. The site generates a one-time code.
+3. The player joins the Azumofuyuki Minecraft server and says the code in public chat.
+4. The administrator checks the live player and code, then approves the application in the admin panel.
 
-The website cannot independently observe Minecraft server chat. Verification is therefore an explicit administrator action, not an automatic Minecraft integration. Never approve based only on a username or an applicant's claim.
+This is manual administrator verification. The web app does not independently read Minecraft server chat or verify Microsoft ownership. Do not approve based only on a username or an applicant's claim.
 
-## Deployment
+## Deploy on Render
 
-Deploy on a Node.js host with a persistent disk. Configure these environment variables in the host dashboard:
+A `render.yaml` blueprint is included. It configures a Node web service and persistent disk. The persistent disk requires a paid Render service plan. During deployment, enter `ADMIN_PASSWORD` as a secret environment variable. Render generates `SESSION_SECRET`.
 
+Required environment:
 - `NODE_ENV=production`
-- `PORT` (provided by most hosts)
-- `SESSION_SECRET` (long random secret)
-- `ADMIN_PASSWORD` (strong unique password; never commit it)
-- `DATABASE_FILE` (path on persistent disk)
-- `PUBLIC_URL=https://your-domain.example` (exact public origin)
+- `DATABASE_FILE=/var/data/azumofuyuki.sqlite`
+- `SESSION_SECRET` (random, 32+ chars)
+- `ADMIN_PASSWORD` (strong and unique)
+- `PUBLIC_URL=https://your-domain.example` (set to the exact public origin)
 
-Put the app behind HTTPS. Back up the SQLite database and its WAL safely. Do not deploy this on static-only GitHub Pages: realtime sockets, sessions, and the database require a running Node.js server and persistent storage.
+Do not deploy this app on GitHub Pages or another static-only host. The backend, Socket.IO, sessions, uploads and SQLite database require a running Node.js process and persistent disk.
+
+## Storage and limits
+
+SQLite data, session storage and uploaded files live beside the configured database path. Back up the database and uploads directory together. Each upload is limited to 15 MB and each message accepts up to five attachments. File access requires an approved logged-in account; unattached uploads are visible only to their uploader.
 
 ## Security notes
 
-- Passwords are bcrypt-hashed.
+- Passwords use bcrypt.
 - Session cookies are HttpOnly and SameSite=Strict; Secure is enabled in production.
-- Login and application endpoints are rate-limited.
-- All privileged actions are checked server-side.
-- Socket connections require an approved account; banned users are disconnected.
-- User content is rendered as text, never HTML.
-- Do not commit `.env`, database files, or credentials.
+- Mutating API requests validate the request origin when supplied.
+- Privileged routes are checked server-side.
+- Socket.IO connections require an approved account.
+- File names are replaced with random storage identifiers; user-provided text is rendered as text.
+- Never commit `.env`, database files, session files or uploaded user content.
+- Run dependency updates and security audits before a public launch.
 
-## Current scope
+## Not included yet
 
-This is the first deployable foundation. It intentionally does not claim Microsoft/Mojang identity verification, automatic server-chat integration, DMs, file uploads, voice/video, or end-to-end encryption. The manual in-game check is the selected identity-verification method.
+Voice/video calls, end-to-end encryption, automatic Minecraft server chat integration, OAuth/Microsoft account verification, and multi-server federation are not implemented.
