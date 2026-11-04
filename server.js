@@ -12,7 +12,7 @@ const { rateLimit } = require('express-rate-limit');
 const { Server } = require('socket.io');
 
 const PORT = Number(process.env.PORT || 3000);
-const ADMIN_USERNAME = process.env.ADMIN_USERNAME || 'AzumoAurora3032';
+const ADMIN_USERNAME = 'AzumoAurora3032';
 const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD;
 const SESSION_SECRET = process.env.SESSION_SECRET;
 const DB_FILE = path.resolve(process.env.DATABASE_FILE || './data/azumofuyuki.sqlite');
@@ -113,6 +113,7 @@ app.post('/api/apply', authLimiter, async (req, res) => {
   return res.status(409).json({ error: 'このMinecraftユーザー名は既に登録済み、または申請中です。' });
  const code = crypto.randomBytes(3).toString('hex').toUpperCase();
  const hash = await bcrypt.hash(password, 12);
+ db.prepare("DELETE FROM applications WHERE username_key = ? AND status = 'rejected'").run(usernameKey);
  try {
   db.prepare('INSERT INTO applications(username, username_key, password_hash, verification_code) VALUES (?, ?, ?, ?)').run(username, usernameKey, hash, code);
  } catch { return res.status(409).json({ error: 'このユーザー名は既に申請されています。' }); }
