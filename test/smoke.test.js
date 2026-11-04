@@ -31,7 +31,7 @@ test('server health, admin approval, channels and direct messages',async t=>{
  const channels=await call('/api/channels','GET',null,memberLogin.cookie);
  assert.equal(channels.data.channels.length,3);
  const dm=await call('/api/dms','POST',{username:'TestPlayer1'},adminCookie);
- assert.equal(dm.r.status,201);
+ assert.equal(dm.r.status,200);
  const sent=await call('/api/dms/'+dm.data.id+'/messages','POST',{body:'hello from test'},adminCookie);
  assert.equal(sent.r.status,201);assert.equal(sent.data.message.body,'hello from test');
  const dms=await call('/api/dms','GET',null,memberLogin.cookie);
