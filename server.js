@@ -1,209 +1,102 @@
-const path = require('node:path');
-const fs = require('node:fs');
-const crypto = require('node:crypto');
-const http = require('node:http');
-const express = require('express');
-const session = require('express-session');
-const SQLiteStore = require('connect-sqlite3')(session);
-const Database = require('better-sqlite3');
-const bcrypt = require('bcryptjs');
-const helmet = require('helmet');
-const { rateLimit } = require('express-rate-limit');
-const { Server } = require('socket.io');
+const path=require('node:path');
+const fs=require('node:fs');
+const crypto=require('node:crypto');
+const http=require('node:http');
+const express=require('express');
+const session=require('express-session');
+const SQLiteStore=require('connect-sqlite3')(session);
+const Database=require('better-sqlite3');
+const bcrypt=require('bcryptjs');
+const helmet=require('helmet');
+const {rateLimit}=require('express-rate-limit');
+const multer=require('multer');
+const {Server}=require('socket.io');
 
-const PORT = Number(process.env.PORT || 3000);
-const ADMIN_USERNAME = 'AzumoAurora3032';
-const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD;
-const SESSION_SECRET = process.env.SESSION_SECRET;
-const DB_FILE = path.resolve(process.env.DATABASE_FILE || './data/azumofuyuki.sqlite');
+const PORT=Number(process.env.PORT||3000), ADMIN='AzumoAurora3032';
+const ADMIN_PASSWORD=process.env.ADMIN_PASSWORD, SESSION_SECRET=process.env.SESSION_SECRET;
+const DB_FILE=path.resolve(process.env.DATABASE_FILE||'./data/azumofuyuki.sqlite');
+const DATA_DIR=path.dirname(DB_FILE), UPLOAD_DIR=path.join(DATA_DIR,'uploads');
+if(!ADMIN_PASSWORD||ADMIN_PASSWORD.startsWith('replace-')) throw new Error('Set ADMIN_PASSWORD.');
+if(!SESSION_SECRET||SESSION_SECRET.length<32||SESSION_SECRET.startsWith('replace-')) throw new Error('Set SESSION_SECRET (32+ chars).');
+fs.mkdirSync(UPLOAD_DIR,{recursive:true});
+const db=new Database(DB_FILE); db.pragma('journal_mode=WAL'); db.pragma('foreign_keys=ON');
+db.exec(\`
+CREATE TABLE IF NOT EXISTS users(id INTEGER PRIMARY KEY AUTOINCREMENT,username TEXT NOT NULL,username_key TEXT NOT NULL UNIQUE,password_hash TEXT NOT NULL,role TEXT NOT NULL DEFAULT 'member',status TEXT NOT NULL DEFAULT 'pending',created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,approved_at TEXT);
+CREATE TABLE IF NOT EXISTS applications(id INTEGER PRIMARY KEY AUTOINCREMENT,username TEXT NOT NULL,username_key TEXT NOT NULL UNIQUE,password_hash TEXT NOT NULL,verification_code TEXT NOT NULL UNIQUE,status TEXT NOT NULL DEFAULT 'pending',created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,reviewed_at TEXT,reviewed_by TEXT);
+CREATE TABLE IF NOT EXISTS channels(id INTEGER PRIMARY KEY AUTOINCREMENT,name TEXT NOT NULL UNIQUE,description TEXT NOT NULL DEFAULT '',created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP);
+CREATE TABLE IF NOT EXISTS messages(id INTEGER PRIMARY KEY AUTOINCREMENT,channel_id INTEGER NOT NULL REFERENCES channels(id),user_id INTEGER NOT NULL REFERENCES users(id),body TEXT NOT NULL,created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP);
+CREATE TABLE IF NOT EXISTS reactions(id INTEGER PRIMARY KEY AUTOINCREMENT,message_id INTEGER NOT NULL REFERENCES messages(id) ON DELETE CASCADE,user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,emoji TEXT NOT NULL,created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,UNIQUE(message_id,user_id,emoji));
+CREATE TABLE IF NOT EXISTS pins(id INTEGER PRIMARY KEY AUTOINCREMENT,channel_id INTEGER NOT NULL REFERENCES channels(id) ON DELETE CASCADE,message_id INTEGER NOT NULL REFERENCES messages(id) ON DELETE CASCADE,pinned_by INTEGER NOT NULL REFERENCES users(id),created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,UNIQUE(channel_id,message_id));
+CREATE TABLE IF NOT EXISTS notifications(id INTEGER PRIMARY KEY AUTOINCREMENT,user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,kind TEXT NOT NULL,message TEXT NOT NULL,link_type TEXT,link_id INTEGER,is_read INTEGER NOT NULL DEFAULT 0,created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP);
+CREATE TABLE IF NOT EXISTS attachments(id INTEGER PRIMARY KEY AUTOINCREMENT,storage_name TEXT NOT NULL UNIQUE,original_name TEXT NOT NULL,mime_type TEXT NOT NULL,size INTEGER NOT NULL,uploader_id INTEGER NOT NULL REFERENCES users(id),message_id INTEGER REFERENCES messages(id) ON DELETE CASCADE,created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP);
+CREATE TABLE IF NOT EXISTS dm_conversations(id INTEGER PRIMARY KEY AUTOINCREMENT,created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP);
+CREATE TABLE IF NOT EXISTS dm_participants(conversation_id INTEGER NOT NULL REFERENCES dm_conversations(id) ON DELETE CASCADE,user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,PRIMARY KEY(conversation_id,user_id));
+CREATE TABLE IF NOT EXISTS dm_messages(id INTEGER PRIMARY KEY AUTOINCREMENT,conversation_id INTEGER NOT NULL REFERENCES dm_conversations(id) ON DELETE CASCADE,user_id INTEGER NOT NULL REFERENCES users(id),body TEXT NOT NULL,created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,edited_at TEXT);
+CREATE TABLE IF NOT EXISTS channel_permissions(channel_id INTEGER NOT NULL REFERENCES channels(id) ON DELETE CASCADE,role TEXT NOT NULL,can_send INTEGER NOT NULL DEFAULT 1,can_attach INTEGER NOT NULL DEFAULT 1,PRIMARY KEY(channel_id,role));
+CREATE INDEX IF NOT EXISTS idx_messages_channel ON messages(channel_id,id);
+CREATE INDEX IF NOT EXISTS idx_notifications_user ON notifications(user_id,is_read,id);
+\`);
+function addColumn(table,column,definition){const cols=db.prepare('PRAGMA table_info('+table+')').all().map(x=>x.name);if(!cols.includes(column))db.exec('ALTER TABLE '+table+' ADD COLUMN '+column+' '+definition);}
+addColumn('messages','edited_at','TEXT'); addColumn('messages','deleted_at','TEXT'); addColumn('messages','reply_to_id','INTEGER REFERENCES messages(id)');
+addColumn('channels','is_private','INTEGER NOT NULL DEFAULT 0'); addColumn('channels','is_archived','INTEGER NOT NULL DEFAULT 0');
+for(const [n,d] of [['general','みんなの雑談'],['announcements','サーバーからのお知らせ'],['minecraft','Minecraftの話題']]) db.prepare('INSERT OR IGNORE INTO channels(name,description) VALUES(?,?)').run(n,d);
+const adminKey=ADMIN.toLowerCase(), existing=db.prepare('SELECT id FROM users WHERE username_key=?').get(adminKey);
+if(!existing)db.prepare("INSERT INTO users(username,username_key,password_hash,role,status,approved_at) VALUES(?,?,?,'admin','approved',CURRENT_TIMESTAMP)").run(ADMIN,adminKey,bcrypt.hashSync(ADMIN_PASSWORD,12));
+else db.prepare("UPDATE users SET username=?,role='admin',status='approved' WHERE username_key=?").run(ADMIN,adminKey);
 
-if (!ADMIN_PASSWORD || ADMIN_PASSWORD.startsWith('replace-')) throw new Error('Set a strong ADMIN_PASSWORD in your environment.');
-if (!SESSION_SECRET || SESSION_SECRET.length < 32 || SESSION_SECRET.startsWith('replace-')) throw new Error('Set SESSION_SECRET to a random value of at least 32 characters.');
-fs.mkdirSync(path.dirname(DB_FILE), { recursive: true });
-
-const db = new Database(DB_FILE);
-db.pragma('journal_mode = WAL');
-db.pragma('foreign_keys = ON');
-db.exec(`
-CREATE TABLE IF NOT EXISTS users (
- id INTEGER PRIMARY KEY AUTOINCREMENT, username TEXT NOT NULL, username_key TEXT NOT NULL UNIQUE,
- password_hash TEXT NOT NULL, role TEXT NOT NULL DEFAULT 'member', status TEXT NOT NULL DEFAULT 'pending',
- created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, approved_at TEXT
-);
-CREATE TABLE IF NOT EXISTS applications (
- id INTEGER PRIMARY KEY AUTOINCREMENT, username TEXT NOT NULL, username_key TEXT NOT NULL UNIQUE,
- password_hash TEXT NOT NULL, verification_code TEXT NOT NULL UNIQUE, status TEXT NOT NULL DEFAULT 'pending',
- created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, reviewed_at TEXT, reviewed_by TEXT
-);
-CREATE TABLE IF NOT EXISTS channels (
- id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL UNIQUE, description TEXT NOT NULL DEFAULT '',
- created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
-);
-CREATE TABLE IF NOT EXISTS messages (
- id INTEGER PRIMARY KEY AUTOINCREMENT, channel_id INTEGER NOT NULL REFERENCES channels(id),
- user_id INTEGER NOT NULL REFERENCES users(id), body TEXT NOT NULL,
- created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
-);
-CREATE INDEX IF NOT EXISTS messages_channel_id_id ON messages(channel_id, id);
-`);
-for (const [name, description] of [['general','みんなの雑談'],['announcements','サーバーからのお知らせ'],['minecraft','Minecraftの話題']]) {
- db.prepare('INSERT OR IGNORE INTO channels(name, description) VALUES (?, ?)').run(name, description);
-}
-const adminKey = ADMIN_USERNAME.toLowerCase();
-const admin = db.prepare('SELECT id FROM users WHERE username_key = ?').get(adminKey);
-if (!admin) {
- db.prepare('INSERT INTO users(username, username_key, password_hash, role, status, approved_at) VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)')
-   .run(ADMIN_USERNAME, adminKey, bcrypt.hashSync(ADMIN_PASSWORD, 12), 'admin', 'approved');
-} else {
- db.prepare("UPDATE users SET username = ?, role = 'admin', status = 'approved' WHERE username_key = ?").run(ADMIN_USERNAME, adminKey);
-}
-
-const app = express();
-if (process.env.NODE_ENV === 'production') app.set('trust proxy', 1);
-const server = http.createServer(app);
-const io = new Server(server);
-app.disable('x-powered-by');
-app.use(helmet({ contentSecurityPolicy: false }));
-app.use(express.json({ limit: '16kb' }));
-app.use(express.urlencoded({ extended: false, limit: '16kb' }));
-const sessionMiddleware = session({
- store: new SQLiteStore({ db: 'sessions.sqlite', dir: path.dirname(DB_FILE) }),
- secret: SESSION_SECRET, resave: false, saveUninitialized: false,
- cookie: { httpOnly: true, sameSite: 'strict', secure: process.env.NODE_ENV === 'production', maxAge: 7 * 24 * 60 * 60 * 1000 }
-});
-app.use(sessionMiddleware);
-io.engine.use(sessionMiddleware);
-
-const authLimiter = rateLimit({ windowMs: 15 * 60 * 1000, limit: 12, standardHeaders: 'draft-7', legacyHeaders: false });
-const usernamePattern = /^[A-Za-z0-9_]{3,16}$/;
-const normalize = value => String(value || '').trim();
-const safeUser = user => ({ id: user.id, username: user.username, role: user.role });
-function currentUser(req) {
- if (!req.session.userId) return null;
- return db.prepare("SELECT id, username, role, status FROM users WHERE id = ? AND status = 'approved'").get(req.session.userId) || null;
-}
-function requireAuth(req, res, next) {
- const user = currentUser(req);
- if (!user) return res.status(401).json({ error: 'ログインが必要です。' });
- req.user = user; next();
-}
-function requireAdmin(req, res, next) {
- if (req.user.role !== 'admin' || req.user.username !== ADMIN_USERNAME) return res.status(403).json({ error: '管理者のみ利用できます。' });
- next();
-}
-app.use('/api', (req, res, next) => {
- if (!['GET','HEAD','OPTIONS'].includes(req.method)) {
-  const origin = req.get('origin');
-  if (origin && origin !== (process.env.PUBLIC_URL || `${req.protocol}://${req.get('host')}`)) return res.status(403).json({ error: '不正なアクセス元です。' });
- }
- next();
-});
-
-app.get('/api/health', (req, res) => res.json({ ok: true, service: 'azumofuyuki-chat' }));
-app.get('/api/me', (req, res) => {
- const user = currentUser(req);
- res.json({ user: user ? safeUser(user) : null });
-});
-app.post('/api/apply', authLimiter, async (req, res) => {
- const username = normalize(req.body.username);
- const password = String(req.body.password || '');
- const usernameKey = username.toLowerCase();
- if (!usernamePattern.test(username)) return res.status(400).json({ error: 'Minecraft Java版のユーザー名（英数字と_、3〜16文字）を入力してください。' });
- if (password.length < 10 || password.length > 128) return res.status(400).json({ error: 'パスワードは10〜128文字にしてください。' });
- if (usernameKey === adminKey) return res.status(409).json({ error: 'このユーザー名は管理者専用です。' });
- if (db.prepare('SELECT id FROM users WHERE username_key = ?').get(usernameKey) || db.prepare("SELECT id FROM applications WHERE username_key = ? AND status IN ('pending','approved')").get(usernameKey))
-  return res.status(409).json({ error: 'このMinecraftユーザー名は既に登録済み、または申請中です。' });
- const code = crypto.randomBytes(3).toString('hex').toUpperCase();
- const hash = await bcrypt.hash(password, 12);
- db.prepare("DELETE FROM applications WHERE username_key = ? AND status = 'rejected'").run(usernameKey);
- try {
-  db.prepare('INSERT INTO applications(username, username_key, password_hash, verification_code) VALUES (?, ?, ?, ?)').run(username, usernameKey, hash, code);
- } catch { return res.status(409).json({ error: 'このユーザー名は既に申請されています。' }); }
- res.status(201).json({ message: '申請を受け付けました。', code, instruction: `Minecraftサーバー内で「${code}」と発言し、管理者に確認してもらってください。確認後、管理者が承認するとログインできます。` });
-});
-app.post('/api/login', authLimiter, async (req, res) => {
- const username = normalize(req.body.username);
- const password = String(req.body.password || '');
- const user = db.prepare("SELECT * FROM users WHERE username_key = ? AND status = 'approved'").get(username.toLowerCase());
- if (!user || !(await bcrypt.compare(password, user.password_hash))) return res.status(401).json({ error: 'ユーザー名またはパスワードが違うか、まだ承認されていません。' });
- req.session.regenerate(err => {
-  if (err) return res.status(500).json({ error: 'ログインに失敗しました。' });
-  req.session.userId = user.id;
-  res.json({ user: safeUser(user) });
- });
-});
-app.post('/api/logout', (req, res) => req.session.destroy(() => res.json({ ok: true })));
-app.get('/api/channels', requireAuth, (req, res) => res.json({ channels: db.prepare('SELECT id, name, description FROM channels ORDER BY id').all() }));
-app.get('/api/messages/:channelId', requireAuth, (req, res) => {
- const channelId = Number(req.params.channelId);
- if (!db.prepare('SELECT id FROM channels WHERE id = ?').get(channelId)) return res.status(404).json({ error: 'チャンネルがありません。' });
- const messages = db.prepare(`SELECT m.id, m.body, m.created_at, u.username, u.role FROM messages m JOIN users u ON u.id = m.user_id WHERE m.channel_id = ? ORDER BY m.id DESC LIMIT 100`).all(channelId).reverse();
- res.json({ messages });
-});
-app.post('/api/admin/channels', requireAuth, requireAdmin, (req, res) => {
- const name = normalize(req.body.name).toLowerCase().replace(/[^a-z0-9_-]/g, '').slice(0, 24);
- const description = normalize(req.body.description).slice(0, 100);
- if (name.length < 2) return res.status(400).json({ error: 'チャンネル名は2文字以上必要です。' });
- try { const info = db.prepare('INSERT INTO channels(name, description) VALUES (?, ?)').run(name, description); res.status(201).json({ id: Number(info.lastInsertRowid), name, description }); }
- catch { res.status(409).json({ error: '同じ名前のチャンネルが既にあります。' }); }
-});
-app.get('/api/admin/applications', requireAuth, requireAdmin, (req, res) => {
- res.json({ applications: db.prepare("SELECT id, username, verification_code, status, created_at FROM applications WHERE status = 'pending' ORDER BY id").all() });
-});
-app.post('/api/admin/applications/:id/approve', requireAuth, requireAdmin, (req, res) => {
- const id = Number(req.params.id);
- const application = db.prepare("SELECT * FROM applications WHERE id = ? AND status = 'pending'").get(id);
- if (!application) return res.status(404).json({ error: '申請が見つかりません。' });
- if (application.username_key === adminKey) return res.status(403).json({ error: '管理者名は申請できません。' });
- const tx = db.transaction(() => {
-  db.prepare("INSERT INTO users(username, username_key, password_hash, role, status, approved_at) VALUES (?, ?, ?, 'member', 'approved', CURRENT_TIMESTAMP)")
-   .run(application.username, application.username_key, application.password_hash);
-  db.prepare("UPDATE applications SET status = 'approved', reviewed_at = CURRENT_TIMESTAMP, reviewed_by = ? WHERE id = ?").run(req.user.username, id);
- });
- try { tx(); } catch { return res.status(409).json({ error: '登録に失敗しました。ユーザー名が既に使用されている可能性があります。' }); }
- res.json({ ok: true });
-});
-app.post('/api/admin/applications/:id/reject', requireAuth, requireAdmin, (req, res) => {
- const info = db.prepare("UPDATE applications SET status = 'rejected', reviewed_at = CURRENT_TIMESTAMP, reviewed_by = ? WHERE id = ? AND status = 'pending'").run(req.user.username, Number(req.params.id));
- if (!info.changes) return res.status(404).json({ error: '申請が見つかりません。' });
- res.json({ ok: true });
-});
-app.get('/api/admin/members', requireAuth, requireAdmin, (req, res) => {
- res.json({ members: db.prepare("SELECT id, username, role, created_at FROM users WHERE status = 'approved' ORDER BY role DESC, username COLLATE NOCASE").all() });
-});
-app.post('/api/admin/members/:id/ban', requireAuth, requireAdmin, (req, res) => {
- const id = Number(req.params.id);
- const target = db.prepare('SELECT username, role FROM users WHERE id = ?').get(id);
- if (!target || target.role === 'admin') return res.status(403).json({ error: 'このユーザーは停止できません。' });
- db.prepare("UPDATE users SET status = 'banned' WHERE id = ?").run(id);
- for (const socket of io.sockets.sockets.values()) if (socket.data.userId === id) socket.disconnect(true);
- res.json({ ok: true });
-});
-app.use(express.static(path.join(__dirname, 'public')));
-app.get('*', (req, res) => res.sendFile(path.join(__dirname, 'public', 'index.html')));
-
-io.use((socket, next) => {
- const userId = socket.request.session?.userId;
- const user = userId && currentUser({ session: { userId } });
- if (!user) return next(new Error('ログインが必要です。'));
- socket.data.userId = user.id; socket.data.username = user.username; next();
-});
-io.on('connection', socket => {
- socket.on('join-channel', channelId => {
-  const id = Number(channelId);
-  if (db.prepare('SELECT id FROM channels WHERE id = ?').get(id)) {
-   for (const room of socket.rooms) if (room.startsWith('channel:')) socket.leave(room);
-   socket.join(`channel:${id}`);
-  }
- });
- socket.on('send-message', payload => {
-  const user = db.prepare("SELECT id, username, role FROM users WHERE id = ? AND status = 'approved'").get(socket.data.userId);
-  const channelId = Number(payload?.channelId);
-  const body = String(payload?.body || '').trim();
-  if (!user || !body || body.length > 2000 || !db.prepare('SELECT id FROM channels WHERE id = ?').get(channelId)) return;
-  const result = db.prepare('INSERT INTO messages(channel_id, user_id, body) VALUES (?, ?, ?)').run(channelId, user.id, body);
-  const message = db.prepare('SELECT m.id, m.body, m.created_at, u.username, u.role FROM messages m JOIN users u ON u.id = m.user_id WHERE m.id = ?').get(result.lastInsertRowid);
-  io.to(`channel:${channelId}`).emit('new-message', message);
- });
-});
-server.listen(PORT, () => console.log(`Azumofuyuki Chat listening on :${PORT}`));
+const app=express(); if(process.env.NODE_ENV==='production')app.set('trust proxy',1);
+const server=http.createServer(app), io=new Server(server,{maxHttpBufferSize:1e6});
+app.disable('x-powered-by'); app.use(helmet({contentSecurityPolicy:false}));
+app.use(express.json({limit:'1mb'})); app.use(express.urlencoded({extended:false,limit:'1mb'}));
+const sessionMiddleware=session({store:new SQLiteStore({db:'sessions.sqlite',dir:DATA_DIR}),secret:SESSION_SECRET,resave:false,saveUninitialized:false,cookie:{httpOnly:true,sameSite:'strict',secure:process.env.NODE_ENV==='production',maxAge:7*86400000}});
+app.use(sessionMiddleware); io.engine.use(sessionMiddleware);
+const limiter=rateLimit({windowMs:15*60*1000,limit:15,standardHeaders:'draft-7',legacyHeaders:false});
+const upload=multer({storage:multer.diskStorage({destination:(req,file,cb)=>cb(null,UPLOAD_DIR),filename:(req,file,cb)=>cb(null,crypto.randomBytes(18).toString('hex'))}),limits:{fileSize:15*1024*1024,files:5},fileFilter:(req,file,cb)=>{const allowed=/^(image\/(png|jpeg|gif|webp)|application\/pdf|text\/plain|application\/zip|application\/x-zip-compressed)$/i.test(file.mimetype);cb(allowed?null:new Error('このファイル形式には対応していません。'),allowed);}});
+const usernamePattern=/^[A-Za-z0-9_]{3,16}$/;
+const clean=v=>String(v??'').trim();
+const safeUser=u=>({id:u.id,username:u.username,role:u.role});
+function currentUser(req){if(!req.session?.userId)return null;return db.prepare("SELECT id,username,role,status FROM users WHERE id=? AND status='approved'").get(req.session.userId)||null;}
+function auth(req,res,next){const u=currentUser(req);if(!u)return res.status(401).json({error:'ログインが必要です。'});req.user=u;next();}
+function admin(req,res,next){if(req.user.role!=='admin'||req.user.username!==ADMIN)return res.status(403).json({error:'管理者のみ利用できます。'});next();}
+function channelAccess(channelId,user){const c=db.prepare('SELECT * FROM channels WHERE id=? AND is_archived=0').get(channelId);if(!c)return null;if(c.is_private&&user.role!=='admin')return null;return c;}
+function notify(userId,kind,message,link_type=null,link_id=null){const r=db.prepare('INSERT INTO notifications(user_id,kind,message,link_type,link_id) VALUES(?,?,?,?,?)').run(userId,kind,message,link_type,link_id);const n=db.prepare('SELECT * FROM notifications WHERE id=?').get(r.lastInsertRowid);io.to('user:'+userId).emit('notification',n);}
+function msgQuery(id){return db.prepare("SELECT m.id,m.channel_id,m.user_id,m.body,m.created_at,m.edited_at,m.deleted_at,m.reply_to_id,u.username,u.role FROM messages m JOIN users u ON u.id=m.user_id WHERE m.id=?").get(id);}
+function fullMessage(id){const m=msgQuery(id);if(!m)return null;m.reactions=db.prepare('SELECT emoji,COUNT(*) count,GROUP_CONCAT(user_id) user_ids FROM reactions WHERE message_id=? GROUP BY emoji').all(id).map(r=>({...r,user_ids:r.user_ids.split(',').map(Number)}));m.attachments=db.prepare('SELECT id,original_name,mime_type,size FROM attachments WHERE message_id=?').all(id);m.reply=m.reply_to_id?(()=>{const r=msgQuery(m.reply_to_id);return r?{id:r.id,username:r.username,body:r.deleted_at?'削除されたメッセージ':r.body}:null})():null;return m;}
+function canModerate(user,message){return user.role==='admin'||message.user_id===user.id;}
+app.use('/api',(req,res,next)=>{const origin=req.get('origin');if(!['GET','HEAD','OPTIONS'].includes(req.method)&&origin&&origin!==(process.env.PUBLIC_URL||req.protocol+'://'+req.get('host')))return res.status(403).json({error:'不正なアクセス元です。'});next();});
+app.get('/api/health',(req,res)=>res.json({ok:true,service:'azumofuyuki-chat'}));
+app.get('/api/me',(req,res)=>res.json({user:(u=>u?safeUser(u):null)(currentUser(req))}));
+app.post('/api/apply',limiter,async(req,res)=>{const username=clean(req.body.username),key=username.toLowerCase(),password=String(req.body.password||'');if(!usernamePattern.test(username))return res.status(400).json({error:'Minecraftユーザー名は英数字と_の3〜16文字です。'});if(password.length<10||password.length>128)return res.status(400).json({error:'パスワードは10〜128文字にしてください。'});if(key===adminKey)return res.status(409).json({error:'管理者専用のユーザー名です。'});if(db.prepare('SELECT id FROM users WHERE username_key=?').get(key)||db.prepare("SELECT id FROM applications WHERE username_key=? AND status='pending'").get(key))return res.status(409).json({error:'登録済み、または申請中のユーザー名です。'});const code=crypto.randomBytes(3).toString('hex').toUpperCase(),hash=await bcrypt.hash(password,12);db.prepare("DELETE FROM applications WHERE username_key=? AND status='rejected'").run(key);try{db.prepare('INSERT INTO applications(username,username_key,password_hash,verification_code) VALUES(?,?,?,?)').run(username,key,hash,code);}catch{return res.status(409).json({error:'申請が重複しています。'});}res.status(201).json({code,instruction:'Minecraftサーバー内で確認コードを発言し、管理者に確認してもらってください。'});});
+app.post('/api/login',limiter,async(req,res)=>{const username=clean(req.body.username),u=db.prepare("SELECT * FROM users WHERE username_key=? AND status='approved'").get(username.toLowerCase());if(!u||!(await bcrypt.compare(String(req.body.password||''),u.password_hash)))return res.status(401).json({error:'ユーザー名・パスワードが違うか、未承認です。'});req.session.regenerate(err=>{if(err)return res.status(500).json({error:'ログインできませんでした。'});req.session.userId=u.id;res.json({user:safeUser(u)});});});
+app.post('/api/logout',(req,res)=>req.session.destroy(()=>res.json({ok:true})));
+app.get('/api/channels',auth,(req,res)=>{const channels=db.prepare('SELECT id,name,description,is_private FROM channels WHERE is_archived=0 AND (is_private=0 OR ?=\\'admin\\') ORDER BY id').all(req.user.role);res.json({channels});});
+app.post('/api/admin/channels',auth,admin,(req,res)=>{const name=clean(req.body.name).toLowerCase().replace(/[^a-z0-9_-]/g,'').slice(0,24),description=clean(req.body.description).slice(0,120);if(name.length<2)return res.status(400).json({error:'チャンネル名は2文字以上です。'});try{const r=db.prepare('INSERT INTO channels(name,description,is_private) VALUES(?,?,?)').run(name,description,req.body.is_private?1:0);res.status(201).json({id:r.lastInsertRowid,name,description});}catch{res.status(409).json({error:'同名チャンネルがあります。'});}});
+app.delete('/api/admin/channels/:id',auth,admin,(req,res)=>{const id=Number(req.params.id);if([1,2,3].includes(id))return res.status(400).json({error:'標準チャンネルは削除できません。'});const r=db.prepare('UPDATE channels SET is_archived=1 WHERE id=?').run(id);if(!r.changes)return res.status(404).json({error:'チャンネルがありません。'});io.to('channel:'+id).emit('channel-archived');res.json({ok:true});});
+app.get('/api/messages/:channelId',auth,(req,res)=>{const id=Number(req.params.channelId);if(!channelAccess(id,req.user))return res.status(404).json({error:'チャンネルがありません。'});const before=Number(req.query.before)||Number.MAX_SAFE_INTEGER;const rows=db.prepare('SELECT id FROM messages WHERE channel_id=? AND id<? ORDER BY id DESC LIMIT 100').all(id,before).reverse();res.json({messages:rows.map(x=>fullMessage(x.id))});});
+app.get('/api/search',auth,(req,res)=>{const q=clean(req.query.q).slice(0,100);if(q.length<2)return res.json({messages:[]});const rows=db.prepare("SELECT m.id FROM messages m JOIN channels c ON c.id=m.channel_id WHERE c.is_archived=0 AND (c.is_private=0 OR ?='admin') AND m.deleted_at IS NULL AND m.body LIKE ? ORDER BY m.id DESC LIMIT 50").all(req.user.role,'%'+q.replace(/[\\\\%_]/g,'\\\\$&')+'%');res.json({messages:rows.map(x=>fullMessage(x.id))});});
+app.post('/api/messages/:id/reactions',auth,(req,res)=>{const id=Number(req.params.id),emoji=clean(req.body.emoji);const m=msgQuery(id);if(!m||!channelAccess(m.channel_id,req.user))return res.status(404).json({error:'メッセージがありません。'});if(!['👍','❤️','😂','🎉','👀','🔥','😮','😢'].includes(emoji))return res.status(400).json({error:'未対応のリアクションです。'});const old=db.prepare('SELECT id FROM reactions WHERE message_id=? AND user_id=? AND emoji=?').get(id,req.user.id,emoji);if(old)db.prepare('DELETE FROM reactions WHERE id=?').run(old.id);else db.prepare('INSERT INTO reactions(message_id,user_id,emoji) VALUES(?,?,?)').run(id,req.user.id,emoji);const data=fullMessage(id);io.to('channel:'+m.channel_id).emit('message-updated',data);res.json({message:data});});
+app.post('/api/messages/:id/pin',auth,admin,(req,res)=>{const m=msgQuery(Number(req.params.id));if(!m)return res.status(404).json({error:'メッセージがありません。'});const exists=db.prepare('SELECT id FROM pins WHERE message_id=?').get(m.id);if(exists)db.prepare('DELETE FROM pins WHERE id=?').run(exists.id);else db.prepare('INSERT INTO pins(channel_id,message_id,pinned_by) VALUES(?,?,?)').run(m.channel_id,m.id,req.user.id);io.to('channel:'+m.channel_id).emit('pins-updated');res.json({pinned:!exists});});
+app.get('/api/channels/:id/pins',auth,(req,res)=>{const id=Number(req.params.id);if(!channelAccess(id,req.user))return res.status(404).json({error:'チャンネルがありません。'});const pins=db.prepare('SELECT message_id FROM pins WHERE channel_id=? ORDER BY id DESC').all(id);res.json({messages:pins.map(p=>fullMessage(p.message_id))});});
+app.patch('/api/messages/:id',auth,(req,res)=>{const id=Number(req.params.id),m=msgQuery(id);if(!m||m.deleted_at||!canModerate(req.user,m))return res.status(403).json({error:'編集できません。'});const body=clean(req.body.body);if(!body||body.length>2000)return res.status(400).json({error:'本文は1〜2000文字です。'});db.prepare('UPDATE messages SET body=?,edited_at=CURRENT_TIMESTAMP WHERE id=?').run(body,id);const data=fullMessage(id);io.to('channel:'+m.channel_id).emit('message-updated',data);res.json({message:data});});
+app.delete('/api/messages/:id',auth,(req,res)=>{const id=Number(req.params.id),m=msgQuery(id);if(!m||m.deleted_at||!canModerate(req.user,m))return res.status(403).json({error:'削除できません。'});db.prepare('UPDATE messages SET body=\\'\\',deleted_at=CURRENT_TIMESTAMP WHERE id=?').run(id);db.prepare('DELETE FROM attachments WHERE message_id=?').run(id);const data=fullMessage(id);io.to('channel:'+m.channel_id).emit('message-updated',data);res.json({ok:true});});
+app.post('/api/uploads',auth,(req,res)=>{upload.array('files',5)(req,res,err=>{if(err)return res.status(400).json({error:err.message});const files=(req.files||[]).map(f=>{const r=db.prepare('INSERT INTO attachments(storage_name,original_name,mime_type,size,uploader_id) VALUES(?,?,?,?,?)').run(f.filename,path.basename(f.originalname).slice(0,180),f.mimetype,f.size,req.user.id);return{id:r.lastInsertRowid,name:f.originalname,size:f.size,mime:f.mimetype};});res.status(201).json({files});});});
+app.get('/api/files/:id',auth,(req,res)=>{const f=db.prepare('SELECT * FROM attachments WHERE id=?').get(Number(req.params.id));if(!f)return res.status(404).end();if(!f.message_id&&f.uploader_id!==req.user.id)return res.status(403).end();const full=path.join(UPLOAD_DIR,f.storage_name);if(!fs.existsSync(full))return res.status(404).end();res.setHeader('Content-Type',f.mime_type);res.setHeader('X-Content-Type-Options','nosniff');res.setHeader('Content-Disposition',\`attachment; filename*=UTF-8''\${encodeURIComponent(f.original_name)}\`);res.sendFile(full);});
+app.get('/api/notifications',auth,(req,res)=>res.json({notifications:db.prepare('SELECT * FROM notifications WHERE user_id=? ORDER BY id DESC LIMIT 50').all(req.user.id)}));
+app.post('/api/notifications/read',auth,(req,res)=>{db.prepare('UPDATE notifications SET is_read=1 WHERE user_id=?').run(req.user.id);res.json({ok:true});});
+app.get('/api/admin/applications',auth,admin,(req,res)=>res.json({applications:db.prepare("SELECT id,username,verification_code,created_at FROM applications WHERE status='pending' ORDER BY id").all()}));
+app.post('/api/admin/applications/:id/approve',auth,admin,(req,res)=>{const a=db.prepare("SELECT * FROM applications WHERE id=? AND status='pending'").get(Number(req.params.id));if(!a||a.username_key===adminKey)return res.status(404).json({error:'申請がありません。'});try{db.transaction(()=>{db.prepare("INSERT INTO users(username,username_key,password_hash,role,status,approved_at) VALUES(?,?,?,'member','approved',CURRENT_TIMESTAMP)").run(a.username,a.username_key,a.password_hash);db.prepare("UPDATE applications SET status='approved',reviewed_at=CURRENT_TIMESTAMP,reviewed_by=? WHERE id=?").run(ADMIN,a.id);})();}catch{return res.status(409).json({error:'登録に失敗しました。'});}res.json({ok:true});});
+app.post('/api/admin/applications/:id/reject',auth,admin,(req,res)=>{const r=db.prepare("UPDATE applications SET status='rejected',reviewed_at=CURRENT_TIMESTAMP,reviewed_by=? WHERE id=? AND status='pending'").run(ADMIN,Number(req.params.id));if(!r.changes)return res.status(404).json({error:'申請がありません。'});res.json({ok:true});});
+app.get('/api/admin/members',auth,admin,(req,res)=>res.json({members:db.prepare("SELECT id,username,role,status,created_at FROM users ORDER BY role DESC,username COLLATE NOCASE").all()}));
+app.post('/api/admin/members/:id/ban',auth,admin,(req,res)=>{const id=Number(req.params.id),u=db.prepare('SELECT * FROM users WHERE id=?').get(id);if(!u||u.role==='admin')return res.status(403).json({error:'このメンバーは停止できません。'});db.prepare("UPDATE users SET status='banned' WHERE id=?").run(id);for(const s of io.sockets.sockets.values())if(s.data.userId===id)s.disconnect(true);res.json({ok:true});});
+app.post('/api/admin/members/:id/role',auth,admin,(req,res)=>{const id=Number(req.params.id),role=req.body.role;if(!['member','moderator'].includes(role))return res.status(400).json({error:'無効な権限です。'});const u=db.prepare('SELECT * FROM users WHERE id=?').get(id);if(!u||u.role==='admin')return res.status(403).json({error:'変更できません。'});db.prepare('UPDATE users SET role=? WHERE id=?').run(role,id);res.json({ok:true});});
+app.get('/api/admin/permissions/:id',auth,admin,(req,res)=>res.json({permissions:db.prepare('SELECT role,can_send,can_attach FROM channel_permissions WHERE channel_id=?').all(Number(req.params.id))}));
+app.put('/api/admin/permissions/:id',auth,admin,(req,res)=>{const id=Number(req.params.id);if(!db.prepare('SELECT id FROM channels WHERE id=?').get(id))return res.status(404).json({error:'チャンネルがありません。'});for(const role of ['member','moderator']){const p=req.body[role]||{};db.prepare('INSERT INTO channel_permissions(channel_id,role,can_send,can_attach) VALUES(?,?,?,?) ON CONFLICT(channel_id,role) DO UPDATE SET can_send=excluded.can_send,can_attach=excluded.can_attach').run(id,role,p.can_send===false?0:1,p.can_attach===false?0:1);}res.json({ok:true});});
+app.post('/api/dms',auth,(req,res)=>{const username=clean(req.body.username),u=db.prepare("SELECT id,username FROM users WHERE username_key=? AND status='approved'").get(username.toLowerCase());if(!u||u.id===req.user.id)return res.status(404).json({error:'相手が見つかりません。'});let c=db.prepare('SELECT p1.conversation_id id FROM dm_participants p1 JOIN dm_participants p2 ON p1.conversation_id=p2.conversation_id WHERE p1.user_id=? AND p2.user_id=?').get(req.user.id,u.id);if(!c){const id=db.prepare('INSERT INTO dm_conversations DEFAULT VALUES').run().lastInsertRowid;db.prepare('INSERT INTO dm_participants(conversation_id,user_id) VALUES(?,?),(?,?)').run(id,req.user.id,id,u.id);c={id};}res.json({id:c.id,username:u.username});});
+app.get('/api/dms',auth,(req,res)=>{const rows=db.prepare('SELECT c.id,c.created_at,u.id user_id,u.username FROM dm_conversations c JOIN dm_participants me ON me.conversation_id=c.id AND me.user_id=? JOIN dm_participants other ON other.conversation_id=c.id AND other.user_id<>? JOIN users u ON u.id=other.user_id ORDER BY c.id DESC').all(req.user.id,req.user.id);res.json({conversations:rows});});
+app.get('/api/dms/:id/messages',auth,(req,res)=>{const id=Number(req.params.id);if(!db.prepare('SELECT 1 FROM dm_participants WHERE conversation_id=? AND user_id=?').get(id,req.user.id))return res.status(403).json({error:'アクセスできません。'});res.json({messages:db.prepare('SELECT m.id,m.body,m.created_at,m.edited_at,u.username FROM dm_messages m JOIN users u ON u.id=m.user_id WHERE m.conversation_id=? ORDER BY m.id DESC LIMIT 100').all(id).reverse()});});
+app.post('/api/dms/:id/messages',auth,(req,res)=>{const id=Number(req.params.id),body=clean(req.body.body);if(!db.prepare('SELECT 1 FROM dm_participants WHERE conversation_id=? AND user_id=?').get(id,req.user.id))return res.status(403).json({error:'アクセスできません。'});if(!body||body.length>2000)return res.status(400).json({error:'本文は1〜2000文字です。'});const r=db.prepare('INSERT INTO dm_messages(conversation_id,user_id,body) VALUES(?,?,?)').run(id,req.user.id,body);const m=db.prepare('SELECT m.id,m.conversation_id,m.body,m.created_at,u.username FROM dm_messages m JOIN users u ON u.id=m.user_id WHERE m.id=?').get(r.lastInsertRowid);io.to('dm:'+id).emit('dm-message',m);const other=db.prepare('SELECT user_id FROM dm_participants WHERE conversation_id=? AND user_id<>?').get(id,req.user.id);if(other)notify(other.user_id,'dm',req.user.username+' からDMが届きました','dm',id);res.status(201).json({message:m});});
+app.use(express.static(path.join(__dirname,'public')));
+app.get('*',(req,res)=>res.sendFile(path.join(__dirname,'public','index.html')));
+io.use((socket,next)=>{const u=currentUser({session:{userId:socket.request.session?.userId}});if(!u)return next(new Error('ログインが必要です。'));socket.data.userId=u.id;socket.data.username=u.username;socket.data.role=u.role;next();});
+io.on('connection',socket=>{socket.join('user:'+socket.data.userId);socket.on('join-channel',id=>{id=Number(id);if(channelAccess(id,{role:socket.data.role})){for(const r of socket.rooms)if(r.startsWith('channel:'))socket.leave(r);socket.join('channel:'+id);}});socket.on('join-dm',id=>{id=Number(id);if(db.prepare('SELECT 1 FROM dm_participants WHERE conversation_id=? AND user_id=?').get(id,socket.data.userId))socket.join('dm:'+id);});socket.on('send-message',payload=>{const u=db.prepare("SELECT id,username,role,status FROM users WHERE id=?").get(socket.data.userId);if(!u||u.status!=='approved')return;const cid=Number(payload?.channelId),body=clean(payload?.body),c=channelAccess(cid,u);if(!c||!body||body.length>2000)return;const perm=db.prepare('SELECT * FROM channel_permissions WHERE channel_id=? AND role=?').get(cid,u.role);if(perm&&(!perm.can_send||((payload.attachments||[]).length&&!perm.can_attach)))return;let reply=null;if(payload.replyTo){reply=msgQuery(Number(payload.replyTo));if(!reply||reply.channel_id!==cid)return;}const r=db.prepare('INSERT INTO messages(channel_id,user_id,body,reply_to_id) VALUES(?,?,?,?)').run(cid,u.id,body,reply?.id||null);for(const aid of (Array.isArray(payload.attachments)?payload.attachments.slice(0,5):[])){const a=db.prepare('SELECT id FROM attachments WHERE id=? AND uploader_id=? AND message_id IS NULL').get(Number(aid),u.id);if(a)db.prepare('UPDATE attachments SET message_id=? WHERE id=?').run(r.lastInsertRowid,a.id);}const m=fullMessage(r.lastInsertRowid);io.to('channel:'+cid).emit('new-message',m);const mentions=[...body.matchAll(/@([A-Za-z0-9_]{3,16})/g)].map(x=>x[1].toLowerCase());for(const name of new Set(mentions)){const target=db.prepare("SELECT id FROM users WHERE username_key=? AND status='approved'").get(name);if(target&&target.id!==u.id)notify(target.id,'mention',u.username+' があなたにメンションしました','message',m.id);}});});
+server.listen(PORT,()=>console.log('Azumofuyuki Chat listening on '+PORT));
